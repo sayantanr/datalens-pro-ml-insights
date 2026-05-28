@@ -116,11 +116,15 @@ def detect_column_types(df):
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
             dates.append(col)
         else:
-            try:
-                pd.to_datetime(df[col], errors='raise')
-                df[col] = pd.to_datetime(df[col])
+            # Attempt to parse as datetime with inference; if successful treat as date column
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', UserWarning)
+                parsed = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True)
+            if not parsed.isna().all():
+                df[col] = parsed
                 dates.append(col)
-            except:
+            else:
                 dimensions.append(col)
     return dimensions, measures, dates
 
@@ -130,7 +134,7 @@ def apply_global_filters(df, filters):
     for col, values in filters.items():
         if not values:
             continue
-        if df[col].dtype == 'object' or pd.api.types.is_categorical_dtype(df[col]):
+        if df[col].dtype == 'object' or isinstance(df[col].dtype, pd.CategoricalDtype):
             # Categorical filter expects a list of selected options
             df_filtered = df_filtered[df_filtered[col].isin(values)]
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -404,6 +408,8 @@ def generate_all_graphs(df, dimensions, measures, dates):
 
     st.success(f"Generated {graph_count} auto charts! Use Custom Dashboard Builder for more.")
 
+@st.cache_data
+
 def generate_ml_insights_dashboard(df, dimensions, measures, dates):
     """Dashboard with 50+ machine‑learning insights and metrics."""
     st.subheader("🤖 Machine Learning Insights")
@@ -442,7 +448,11 @@ def generate_ml_insights_dashboard(df, dimensions, measures, dates):
             fig = px.bar(fi_df, x='feature', y='importance', title="Random Forest Feature Importance")
             st.plotly_chart(fig, width='stretch')
 
-    # Gradient Boosting Regressor
+    @st.cache_data
+    def _fit_gbr(X, y):
+        gbr = GradientBoostingRegressor(random_state=42)
+        gbr.fit(X, y)
+        return gbr, gbr.predict(X)
     if len(measures) >= 2:
         from sklearn.ensemble import GradientBoostingRegressor
         X = df[features].dropna()
@@ -468,7 +478,11 @@ def generate_ml_insights_dashboard(df, dimensions, measures, dates):
         fig = px.pie(names=cnt.index, values=cnt.values, title="Isolation Forest Anomaly Detection")
         st.plotly_chart(fig, width='stretch')
 
-    # K-Means Clustering (PCA space)
+    @st.cache_data
+    def _fit_kmeans(X, n_clusters):
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(StandardScaler().fit_transform(X))
+        return kmeans, labels
     if len(measures) >= 2:
         n_clusters = st.slider("Number of Clusters", 2, 10, 3, key="ml_cluster_slider")
         X = df[features].dropna()
@@ -485,7 +499,12 @@ def generate_ml_insights_dashboard(df, dimensions, measures, dates):
                                  title="K-Means Clustering (PCA space)")
             st.plotly_chart(fig, width='stretch')
 
-    # ARIMA forecasting if a date column is present
+    @st.cache_data
+    def _arima_forecast(ts):
+        model = ARIMA(ts, order=(5,1,0))
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=30)
+        return forecast
     if dates:
         date_col = dates[0]
         try:
@@ -499,7 +518,11 @@ def generate_ml_insights_dashboard(df, dimensions, measures, dates):
         except Exception as e:
             st.info(f"ARIMA forecast not available: {e}")
 
-    # SHAP values (optional heavy)
+    @st.cache_data
+    def _shap_values(rf, X):
+        explainer = shap.TreeExplainer(rf)
+        shap_vals = explainer.shap_values(X)
+        return shap_vals
     try:
         import shap
         if 'rf' in locals():
@@ -751,6 +774,8 @@ def generate_ml_insights_dashboard(df, dimensions, measures, dates):
             st.pyplot(bbox_inches='tight')
     except Exception as e:
         st.info(f"SHAP values not available: {e}")
+
+@st.cache_data
 
 def generate_statistical_insights_dashboard(df, dimensions, measures):
     """Dashboard with 50+ statistical insights and visualizations."""
